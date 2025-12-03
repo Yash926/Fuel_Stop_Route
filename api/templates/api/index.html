@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Fuel Stop Route</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin=""/>
+    <style>
+      :root{--bg:#f6f8fb;--card:#ffffff;--muted:#6b7280;--accent:#2563eb}
+      html,body{height:100%;margin:0;font-family:Inter, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial}
+      body{background:var(--bg);color:#111}
+      .header{display:flex;align-items:center;gap:12px;padding:16px 20px;background:linear-gradient(90deg,#ffffff,#f8fbff);box-shadow:0 1px 0 rgba(0,0,0,0.04)}
+      .brand{font-weight:700;color:var(--accent)}
+      .controls{margin-left:auto;display:flex;gap:8px;align-items:center}
+      .controls input{padding:8px 10px;border:1px solid #e6eef8;border-radius:8px;width:260px}
+      .controls button{background:var(--accent);color:#fff;border:none;padding:8px 12px;border-radius:8px;cursor:pointer}
+      .layout{display:grid;grid-template-columns:1fr 420px;gap:16px;padding:16px}
+      #map{height:70vh;border-radius:8px;box-shadow:0 6px 18px rgba(16,24,40,0.06)}
+      .panel{background:var(--card);padding:12px;border-radius:8px;box-shadow:0 4px 12px rgba(16,24,40,0.04);overflow:auto}
+      .summary{display:flex;gap:12px;align-items:center;margin-bottom:8px}
+      .stat{background:#f1f5f9;padding:8px 10px;border-radius:6px}
+      pre#fulljson{background:#0f1724;color:#e6eef8;padding:12px;border-radius:6px;max-height:56vh;overflow:auto}
+      .stops{display:flex;flex-direction:column;gap:8px;margin-top:8px}
+      .stop{border-left:4px solid var(--accent);padding:8px;background:#fbfdff;border-radius:6px}
+      .muted{color:var(--muted);font-size:0.95rem}
+      .copy{background:#eef2ff;border:1px solid #e6eef8;padding:6px 8px;border-radius:6px;cursor:pointer}
+      @media (max-width:900px){.layout{grid-template-columns:1fr;}.controls input{width:150px}}
+    </style>
+  </head>
+  <body>
+    <div class="header">
+      <div class="brand">Fuel Stop Route</div>
+      <div class="muted">Find cost-effective fuel stops along your route</div>
+      <div class="controls">
+        <input id="start" placeholder="Start (e.g. San Francisco, CA)" value="San Francisco, CA" />
+        <input id="finish" placeholder="Finish (e.g. Los Angeles, CA)" value="Los Angeles, CA" />
+        <button id="go">Find Route</button>
+      </div>
+    </div>
+
+    <div class="layout">
+      <div>
+        <div id="map" class="panel"></div>
+        <div class="panel" style="margin-top:12px">
+          <div class="summary">
+            <div class="stat" id="distance">Distance: —</div>
+            <div class="stat" id="cost">Est. Cost: —</div>
+            <div style="margin-left:auto"><button class="copy" id="copyJson">Copy JSON</button></div>
+          </div>
+          <div id="stopsList" class="stops"></div>
+        </div>
+      </div>
+
+      <div>
+        <div class="panel">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+            <strong>Full API JSON</strong>
+            <span class="muted">Includes route geometry, stops and prices</span>
+          </div>
+          <pre id="fulljson">{ "loading": true }</pre>
+        </div>
+      </div>
+    </div>
+
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script>
+      const map = L.map('map').setView([39.5, -98.35], 4);
+      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {maxZoom:19, attribution:'© OpenStreetMap contributors'}).addTo(map);
+      let routeLayer = null; let stopsLayer = L.layerGroup().addTo(map);
+
+      function clearUI(){ document.getElementById('distance').textContent='Distance: —'; document.getElementById('cost').textContent='Est. Cost: —'; document.getElementById('stopsList').innerHTML=''; document.getElementById('fulljson').textContent=''; }
+
+      document.getElementById('go').addEventListener('click', async ()=>{
+        const start = document.getElementById('start').value.trim();
+        const finish = document.getElementById('finish').value.trim();
+        if(!start||!finish){ alert('Please enter start and finish'); return }
+        clearUI(); document.getElementById('fulljson').textContent='Loading...';
+        const url = `/api/route/?start=${encodeURIComponent(start)}&finish=${encodeURIComponent(finish)}`;
+        try{
+          const res = await fetch(url);
+          if(!res.ok){ const txt = await res.text(); throw new Error(txt||res.statusText) }
+          const data = await res.json();
+
+          // show full JSON
+          document.getElementById('fulljson').textContent = JSON.stringify(data, null, 2);
+
+          // summary
+          document.getElementById('distance').textContent = `Distance: ${data.distance_miles} mi`;
+          document.getElementById('cost').textContent = `Est. Cost: $${data.estimated_total_cost}`;
+
+          // draw route
+          stopsLayer.clearLayers(); if(routeLayer){ routeLayer.remove(); routeLayer=null }
+          const geo = data.route_geojson; if(geo){ routeLayer = L.geoJSON(geo, { style: { color: '#2563eb', weight:4 } }).addTo(map); map.fitBounds(routeLayer.getBounds(),{padding:[20,20]}); }
+
+          // stops list
+          const stops = data.stops||[]; const list = document.getElementById('stopsList'); list.innerHTML='';
+          stops.forEach(s=>{
+            const div = document.createElement('div'); div.className='stop';
+            const station = s.station || {};
+            div.innerHTML = `<div><strong>Stop ${s.index}</strong> — ${s.distance_from_start_miles} mi</div>
+                             <div class="muted">State: ${s.state||'Unknown'} | Segment: ${s.segment_miles} mi</div>
+                             <div style="margin-top:6px"><em>${station.name||'No station found'}</em> ${station.city?` — ${station.city}`:''} ${station.price?` — $${station.price}`:''}</div>`;
+            list.appendChild(div);
+
+            const lat = s.coord.lat, lon = s.coord.lon; L.circleMarker([lat, lon],{radius:6, color:'#2563eb'}).addTo(stopsLayer).bindPopup(`<strong>Stop ${s.index}</strong><br/>${lat.toFixed(4)}, ${lon.toFixed(4)}`);
+            if(s.station_coord){ L.circleMarker([s.station_coord.lat, s.station_coord.lon],{radius:5, color:'#16a34a'}).addTo(stopsLayer); }
+          });
+
+        }catch(e){ document.getElementById('fulljson').textContent = 'Error: '+e.message; console.error(e) }
+      });
+
+      document.getElementById('copyJson').addEventListener('click', ()=>{
+        const txt = document.getElementById('fulljson').textContent; if(!txt) return; navigator.clipboard.writeText(txt).then(()=>alert('JSON copied'))
+      });
+    </script>
+  </body>
+</html>
